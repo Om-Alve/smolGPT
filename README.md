@@ -17,6 +17,10 @@ A minimal PyTorch implementation for training your own small LLM from scratch. D
 - **Dataset Support**: Built-in TinyStories dataset processing
 - **Custom Tokenizer**: SentencePiece tokenizer training integration
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Om-Alve/smolGPT&type=Date)](https://star-history.com/#Om-Alve/smolGPT&Date)
+
 ## Installation 🛠️
 
 ```bash
