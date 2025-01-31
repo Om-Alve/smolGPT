@@ -43,7 +43,6 @@ iter_batches = partial(
     max_seq_len=GPTConfig.block_size,
     device=train_config.device,
     num_workers=0,
-    max_shards=1
 )
 
 best_val_loss = 1e9
