@@ -6,6 +6,8 @@ import math
 import os
 import torch
 from torch.utils.tensorboard.writer import SummaryWriter
+from torch.distributed import destroy_process_group, init_process_group
+from torch.nn.parallel import DistributedDataParallel as DDP
 from dataset import Task
 
 train_config = TrainingConfig()
@@ -13,18 +15,39 @@ out_dir = "out/"
 writer = SummaryWriter(log_dir=os.path.join(out_dir, "logs"))
 resume = False
 
+ddp = int(os.environ.get("RANK", -1)) != -1
+
+if ddp:
+    init_process_group(backend="nccl")
+    ddp_rank = int(os.environ["RANK"])
+    ddp_local_rank = int(os.environ["LOCAL_RANK"])
+    ddp_world_size = int(os.environ["WORLD_SIZE"])
+    device = f"cuda:{ddp_local_rank}"
+    torch.cuda.set_device(device)
+    master_process = ddp_rank == 0
+    seed_offset = ddp_rank
+    train_config.gradient_accumulation_steps //= ddp_world_size
+
+else:
+    master_process = True
+    seed_offset = 0
+    ddp_world_size = 1
+
 tokens_per_iter = (
     train_config.gradient_accumulation_steps
     * train_config.batch_size
     * GPTConfig.block_size
+    * ddp_world_size
 )
-print("Tokens per iteration: ", tokens_per_iter)
+if master_process:
+    print("Tokens per iteration: ", tokens_per_iter)
 
-torch.manual_seed(42)
+if master_process:
+    os.makedirs(out_dir, exist_ok=True)
+torch.manual_seed(42 + seed_offset)
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.set_float32_matmul_precision("high")
-
 ctx = torch.autocast(train_config.device, dtype=torch.bfloat16)
 
 model_args = dict(
@@ -59,7 +82,8 @@ if resume:
         if k.startswith(unwanted_prefix):
             state_dict[k[len(unwanted_prefix) :]] = state_dict.pop(k)
     model.load_state_dict(state_dict)
-    print("Loaded checkpoint")
+    if master_process:
+        print("Loaded checkpoint")
 else:
     gptconf = GPTConfig(**model_args)
     model = GPT(gptconf).to(train_config.device)
@@ -76,6 +100,9 @@ if train_config.compile:
     model = torch.compile(model)
 
 
+if ddp:
+    model = DDP(model, device_ids=[ddp_local_rank])
+
 @torch.no_grad()
 def estimate_loss():
     out = {}
@@ -86,7 +113,7 @@ def estimate_loss():
         for k in range(train_config.eval_iters):
             X, Y = next(batch_iter)
             with ctx:
-                _, loss = model(X, Y)
+                _, loss = raw_model(X, Y)
             losses[k] = loss.item()
         out[split] = losses.mean()
     model.train()
@@ -108,19 +135,21 @@ def get_lr(it):
 
 
 params = sum([p.numel() for p in model.parameters() if p.requires_grad])
-print("Number of params:", params)
+if master_process:
+    print("Number of params:", params)
 
 train_batch_iter = iter_batches(split="train")
 X, Y = next(train_batch_iter)
 
 iter_num = 0
+raw_model = model.module if ddp else model
 t0 = time.time()
 while True:
     lr = get_lr(iter_num) if train_config.decay_lr else train_config.learning_rate
     for param_group in optimizer.param_groups:
         param_group["lr"] = lr
 
-    if iter_num % train_config.eval_interval == 0:
+    if iter_num % train_config.eval_interval == 0 and master_process:
         losses = estimate_loss()
         print(
             f"step {iter_num}: train_loss {losses['train']:.4f}, val_loss {losses['val']:.4f}"
@@ -141,6 +170,8 @@ while True:
             torch.save(checkpoint, os.path.join(out_dir, "ckpt.pt"))
 
     for micro_step in range(train_config.gradient_accumulation_steps):
+        if ddp:
+            model.require_backward_grad_sync = micro_step == train_config.gradient_accumulation_steps - 1 
         with ctx:
             logits, loss = model(X, Y)
             loss = loss / train_config.gradient_accumulation_steps
@@ -158,7 +189,7 @@ while True:
     dt = t1 - t0
     t0 = t1
 
-    if iter_num % train_config.log_interval == 0:
+    if iter_num % train_config.log_interval == 0 and master_process:
         lossf = loss.item() * train_config.gradient_accumulation_steps
         print(f"iter {iter_num}: loss {lossf:.4f}, time {dt*1000:.2f}ms")
 
@@ -167,4 +198,8 @@ while True:
     if iter_num > train_config.max_iters:
         break
 
+
+if ddp:
+    destroy_process_group()
 writer.close()
+

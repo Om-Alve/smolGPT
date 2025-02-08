@@ -4,7 +4,7 @@ import random
 from pathlib import Path
 import glob
 from typing import Iterator, Tuple
-
+import torch.distributed as dist
 
 class PreTokDataset(torch.utils.data.IterableDataset):
     def __init__(self, split: str, max_seq_len: int):
@@ -13,13 +13,16 @@ class PreTokDataset(torch.utils.data.IterableDataset):
         self.max_seq_len = max_seq_len
 
     def __iter__(self) -> Iterator[Tuple[torch.Tensor, torch.Tensor]]:
+        worker_info = torch.utils.data.get_worker_info()
+        worker_id = worker_info.id if worker_info else 0
+        rank = dist.get_rank() if dist.is_initialized() else 0
+        seed = 42 + worker_id + 1337 * rank
         bin_dir = Path("data/TinyStories_all_data")
         shard_filenames = sorted(glob.glob(str(bin_dir / "*.bin")))
         shard_filenames = (
             shard_filenames[1:] if self.split == "train" else shard_filenames[:1]
         )
-
-        rng = random.Random(42)
+        rng = random.Random(seed)
         while True:
             rng.shuffle(shard_filenames)
             for shard in shard_filenames:
@@ -50,3 +53,4 @@ class Task:
             x = x.to(device)
             y = y.to(device)
             yield x, y
+
