@@ -43,7 +43,7 @@ python preprocess.py prepare-dataset --vocab-size 4096
 python train.py
 ```
 
-*Training and validation loss are logged in `logs/`. To visualize using TensorBoard, run:*
+*Training and validation loss are logged in `out/logs/`. To visualize using TensorBoard, run:*
 ```bash
 tensorboard --logdir=/out/logs
 ```
