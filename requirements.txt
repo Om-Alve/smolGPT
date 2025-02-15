@@ -1,4 +1,4 @@
-numpy==1.24.4
+numpy==1.26.4
 requests==2.32.3
 sentencepiece==0.2.0
 tensorboard==2.14.0
