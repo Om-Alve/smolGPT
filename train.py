@@ -9,13 +9,14 @@ from torch.utils.tensorboard.writer import SummaryWriter
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 from dataset import Task
+from tokenizer import Tokenizer
 
 train_config = TrainingConfig()
 out_dir = "out/"
 writer = SummaryWriter(log_dir=os.path.join(out_dir, "logs"))
-resume = False
-
+resume = True
 ddp = int(os.environ.get("RANK", -1)) != -1
+tokenizer = Tokenizer(f"data/tok{GPTConfig.vocab_size}.model")
 
 if ddp:
     init_process_group(backend="nccl")
@@ -73,7 +74,7 @@ if resume:
     ckpt_path = os.path.join(out_dir, "ckpt.pt")
     checkpoint = torch.load(ckpt_path, map_location=train_config.device)
     gptconf = GPTConfig(**checkpoint["model_args"])
-    model = GPT(gptconf)
+    model = GPT(gptconf).to(train_config.device)
     state_dict = checkpoint["model"]
     unwanted_prefix = "_orig_mod."
     best_val_loss = checkpoint["best_val_loss"]
@@ -168,6 +169,15 @@ while True:
             }
             print(f"Saving checkpoint to {out_dir}")
             torch.save(checkpoint, os.path.join(out_dir, "ckpt.pt"))
+        model.eval()
+        prompt = "Once upon a time"
+        idxs = tokenizer.encode(prompt, bos=True, eos=False)
+        x = torch.tensor(
+            idxs, dtype=torch.long, device=train_config.device
+        ).unsqueeze(0)
+        y = model.generate(x, max_new_tokens=256, temperature=1.0, top_p=0.90)
+        print("===\n\nGenerated Story:\n\n" + tokenizer.decode(y[0].tolist()) + "\n\n===")
+        model.train()
 
     for micro_step in range(train_config.gradient_accumulation_steps):
         if ddp:
